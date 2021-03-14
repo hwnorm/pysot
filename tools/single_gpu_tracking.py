@@ -11,7 +11,7 @@ import torch
 import numpy as np
 from glob import glob
 import copy
-
+import pickle
 from pysot.core.config import cfg
 from pysot.models.model_builder import ModelBuilder
 from pysot.tracker.tracker_builder import build_tracker
@@ -39,8 +39,6 @@ def calc_iou(bbox1, bbox2):
 
     union = area1 + np.squeeze(area2, axis=-1) - intersect
     return intersect / union
-
-torch.set_num_threads(1)
 
 parser = argparse.ArgumentParser(description='tracking demo')
 parser.add_argument('--config', type=str, help='config file')
@@ -82,11 +80,10 @@ def main():
 
     # build tracker
     tracker = build_tracker(model)
-    
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
+
     vp_list = pickle.load(open(args.vp_list, 'rb'))
     proposal_dict = pickle.load(open(args.proposal_dict, 'rb'))
-
+    vp_dict = pickle.load(open(args.vp_dict, 'rb'))
     if args.range[-1] == -1:
         args.range[-1] == len(vp_dict)
 
@@ -94,15 +91,17 @@ def main():
     for vp_idx, vp in enumerate(vp_range):
         videofile, sec_start = vp_to_file_dict[vp]
         video, person = vp.split('.')
-        vf = video+'.'+str(sec_start)
-        if vf in proposal_dict:
-            for obj_idx in range(len(proposal_dict[vf])):
-                print('vp: {} / {}, obj: {} / {}'.format(vp_idx+1, len(vp_range), obj_idx+1, len(proposal_dict[vf])))
+        start_vf = video+'.'+str(sec_start)
+        if start_vf in proposal_dict:
+            start_length = len(proposal_dict[start_vf])
+            for obj_idx in range(start_length):
+                print('vp: {} / {}, obj: {} / {}'.format(vp_idx+1, len(vp_range), obj_idx+1, start_length))
                 track_id = '%'.join([video, person, str(obj_idx)])
                 track_dict = dict()
-                start_rect = proposal_dict[vf][obj_idx]
+                start_rect = copy.deepcopy(proposal_dict[start_vf][obj_idx])
                 videopath = os.path.join(video_dir, videofile)
                 cap = cv2.VideoCapture(videopath)
+                fps = int(cap.get(cv2.CAP_PROP_FPS))
                 frame_idx = 0
                 first_frame = True
                 while True:
@@ -114,26 +113,29 @@ def main():
                         if remained == 0:
                             if first_frame:
                                 init_rect = copy.deepcopy(start_rect) # xywh
-                                track_dict[sec] = init_rect
+                                track_dict[sec] = copy.deepcopy(init_rect)
                                 init_rect[2] -= init_rect[0]
                                 init_rect[3] -= init_rect[1]
                                 tracker.init(frame, init_rect)
                                 first_frame = False
                             else:
-                                vf = video+'.'+str(sec)
-                                proposals = proposal_dict[vf]
                                 outputs = tracker.track(frame)
                                 bbox = outputs['bbox'] # xywh
                                 bbox[2] += bbox[0]
                                 bbox[3] += bbox[1]
-                                track_results = np.expand_dims(np.array(bbox), axis=0)
-                                iou_mat = calc_iou(track_results, proposals)[0]
-                                max_proposal_idx = np.argmax(iou_mat)
-                                proposal_adjust = copy.deepcopy(proposals[max_proposal_idx])
-                                track_dict[sec] = proposal_adjust
-                                proposal_adjust[2] -= proposal_adjust[0]
-                                proposal_adjust[3] -= proposal_adjust[1]
-                                tracker.init(frame, proposal_adjust)
+                                vf = video+'.'+str(sec)
+                                if vf in proposal_dict:
+                                    proposals = copy.deepcopy(proposal_dict[vf])
+                                    track_results = np.expand_dims(np.array(bbox), axis=0)
+                                    iou_mat = calc_iou(track_results, proposals)[0]
+                                    max_proposal_idx = np.argmax(iou_mat)
+                                    proposal_adjust = copy.deepcopy(proposals[max_proposal_idx])
+                                    track_dict[sec] = copy.deepcopy(proposal_adjust)
+                                    proposal_adjust[2] -= proposal_adjust[0]
+                                    proposal_adjust[3] -= proposal_adjust[1]
+                                    tracker.init(frame, proposal_adjust)
+                                else:
+                                    track_dict[sec] = copy.deepcopy(bbox)
                         else:
                             outputs = tracker.track(frame)
 
